@@ -21,25 +21,24 @@ impl ICMPEchoRequestHeader {
         payload_words[1] = ((self.payload[2] as u16) << 8) | self.payload[3] as u16;
 
         let mut sum: u32 = 0;
+        sum += header_and_code_word as u32;
+        sum += check_sum_word as u32;
+        sum += payload_words[0] as u32;
+        sum += payload_words[1] as u32;
+        sum += self.indentifier as u32;
+        sum += self.sequence_number as u32;
 
-        sum = (header_and_code_word + check_sum_word + payload_words[0] + payload_words[1] + self.indentifier + self.sequence_number) as u32;
+        while (sum >> 16) != 0 {
+            sum = (sum & 0xFFFF) + (sum >> 16);
+        }
 
-        // dokończyć, trzeba teraz jakoś zmienić u32 na u16 bez overflowa
-
-
-        
+        !(sum as u16)
     }
 
     fn new(&mut self, sequence_number: u16) -> Self {
         Self { header_type: 8, code: 0, check_sum: self.check_sum(), indentifier: 12, sequence_number: sequence_number, payload: *b"1234" }
     }
 }
-
-// struct Packet {
-//     header: Header,
-//     extended_header: u32,
-//     data: usize
-// }
 
 
 fn main() {
