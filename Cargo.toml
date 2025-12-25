@@ -3,5 +3,9 @@ name = "ping_impl"
 version = "0.1.0"
 edition = "2024"
 
+
 [dependencies]
-socket2 = "0.6.1"
+
+[dependencies.socket2]
+version = "0.6.1"
+features = ["all"]
