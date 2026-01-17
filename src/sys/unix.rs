@@ -1,13 +1,18 @@
-use std::{ffi::c_void, net::SocketAddr, time::Instant};
+use std::{
+    ffi::c_void, mem::zeroed, net::{Ipv4Addr, SocketAddr}, time::Instant
+};
 
-use libc::{__errno_location, AF_INET, ETIMEDOUT, IPPROTO_ICMP, SOCK_RAW, close, recvfrom, sendto, sockaddr, sockaddr_in, socket, socklen_t};
+use libc::{
+    __errno_location, AF_INET, ETIMEDOUT, IPPROTO_ICMP, SOCK_DGRAM, SOCK_RAW, close, recvfrom,
+    sendto, sockaddr, sockaddr_in, socket, socklen_t,
+};
 
 use crate::{Args, protocol::ICMPEchoRequestHeader};
 
 fn address_from_string(ip: String) -> (*const sockaddr, socklen_t) {
-    let sock_addr: SocketAddr = ip.parse().unwrap();
+    let sock_addr: Ipv4Addr = ip.parse().unwrap();
 
-    match sock_addr {
+    match SocketAddr::new(std::net::IpAddr::V4(sock_addr), 0) {
         SocketAddr::V4(addr) => {
             let sockaddr_in = sockaddr_in {
                 sin_family: AF_INET as u16,
@@ -22,21 +27,18 @@ fn address_from_string(ip: String) -> (*const sockaddr, socklen_t) {
             let len = std::mem::size_of::<sockaddr_in>() as libc::socklen_t;
 
             (ptr, len)
-        },
-        _ => {// SocketAddr::V6(addr) => {
+        }
+        _ => {
+            // SocketAddr::V6(addr) => {
             unimplemented!("Not implemented yet")
         }
     }
 }
 
-
-
 pub fn send_icmp_packets(args: Args) {
-    let socket = unsafe{socket(AF_INET, SOCK_RAW, IPPROTO_ICMP)};
+    let socket = unsafe { socket(AF_INET, SOCK_DGRAM, IPPROTO_ICMP) };
     if socket < 0 {
-        let err = unsafe {
-            *__errno_location()
-        };
+        let err = unsafe { *__errno_location() };
         panic!("Socket init failed: {}", err);
     }
 
@@ -49,31 +51,45 @@ pub fn send_icmp_packets(args: Args) {
         let send_time = Instant::now();
         let (addres_pointer, addr_len) = address_from_string(args.ip.clone());
         let msg = unsafe {
-            sendto(socket, buf.as_ptr() as *const c_void, buf.len(), 0, addres_pointer, addr_len)
+            sendto(
+                socket,
+                buf.as_ptr() as *const c_void,
+                buf.len(),
+                0,
+                addres_pointer,
+                addr_len,
+            )
         };
 
         if msg < 0 {
-            let err = unsafe {
-                *__errno_location()
-            };
+            let err = unsafe { *__errno_location() };
             panic!("sendto failed: {}", err)
         }
         let mut buf = [0u8; 1024];
-        let response = unsafe{ recvfrom(socket, buf.as_mut_ptr() as *mut c_void, buf.len(), 0, addres_pointer.cast_mut(), addr_len as *mut socklen_t) };
+        let mut sockaddr_src: sockaddr_in = unsafe {std::mem::zeroed()};
+        let mut sockaddr_src_size: socklen_t = std::mem::size_of::<sockaddr_in>() as socklen_t;
+        let response = unsafe {
+            recvfrom(
+                socket,
+                buf.as_mut_ptr() as *mut c_void,
+                buf.len(),
+                0,
+                &mut sockaddr_src as *mut _ as *mut sockaddr,
+                &mut sockaddr_src_size as *mut socklen_t
+            )
+        };
 
         if response < 0 {
-            let err = unsafe {
-                *__errno_location()
-            };
+            let err = unsafe { *__errno_location() };
             if err == ETIMEDOUT {
-                failed+=1;
+                failed += 1;
                 println!("Request timed out.");
                 continue;
             }
             panic!("recvfrom failed: {}", err)
         }
         let rtt = send_time.elapsed();
-        
+
         let data = &buf[..response as usize];
         let ip_header_len = (data[0] & 0x0F) * 4;
         let icmp = &data[(ip_header_len as usize)..];
@@ -92,13 +108,11 @@ pub fn send_icmp_packets(args: Args) {
             println!("Returned packet is not a valid response");
         }
         succeded += 1;
-
     }
 
     unsafe {
         close(socket);
     }
-
 
     println!(
         "\nStatistics: \n \t Packets: Sent={}, Received={}, Lost={} ({}% loss)",
