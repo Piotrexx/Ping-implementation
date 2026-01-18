@@ -1,10 +1,13 @@
 use std::{
-    ffi::c_void, mem::zeroed, net::{Ipv4Addr, SocketAddr}, time::Instant
+    ffi::c_void,
+    net::{Ipv4Addr, SocketAddr},
+    time::Instant,
 };
 
 use libc::{
-    __errno_location, AF_INET, ETIMEDOUT, IPPROTO_ICMP, SOCK_DGRAM, SOCK_RAW, close, recvfrom,
-    sendto, sockaddr, sockaddr_in, socket, socklen_t,
+    __errno_location, AF_INET, CMSG_DATA, CMSG_FIRSTHDR, CMSG_NXTHDR, ETIMEDOUT, IP_RECVTTL,
+    IP_TTL, IPPROTO_ICMP, IPPROTO_IP, SOCK_DGRAM, c_int, close, iovec, msghdr, recvmsg, sendto,
+    setsockopt, sockaddr, sockaddr_in, socket, socklen_t,
 };
 
 use crate::{Args, protocol::ICMPEchoRequestHeader};
@@ -29,7 +32,6 @@ fn address_from_string(ip: String) -> (*const sockaddr, socklen_t) {
             (ptr, len)
         }
         _ => {
-            // SocketAddr::V6(addr) => {
             unimplemented!("Not implemented yet")
         }
     }
@@ -41,6 +43,18 @@ pub fn send_icmp_packets(args: Args) {
         let err = unsafe { *__errno_location() };
         panic!("Socket init failed: {}", err);
     }
+
+    let enable: c_int = 1;
+
+    unsafe {
+        setsockopt(
+            socket,
+            IPPROTO_IP,
+            IP_RECVTTL,
+            &enable as *const _ as *const c_void,
+            std::mem::size_of::<c_int>() as _,
+        )
+    };
 
     let mut succeded: u8 = 0;
     let mut failed: u8 = 0;
@@ -66,48 +80,67 @@ pub fn send_icmp_packets(args: Args) {
             panic!("sendto failed: {}", err)
         }
         let mut buf = [0u8; 1024];
-        let mut sockaddr_src: sockaddr_in = unsafe {std::mem::zeroed()};
-        let mut sockaddr_src_size: socklen_t = std::mem::size_of::<sockaddr_in>() as socklen_t;
-        let response = unsafe {
-            recvfrom(
-                socket,
-                buf.as_mut_ptr() as *mut c_void,
-                buf.len(),
-                0,
-                &mut sockaddr_src as *mut _ as *mut sockaddr,
-                &mut sockaddr_src_size as *mut socklen_t
-            )
+        let mut cmsg_buf = [0u8; 128];
+
+        let mut iov = iovec {
+            iov_base: buf.as_mut_ptr() as *mut c_void,
+            iov_len: buf.len(),
+        };
+        let mut sockaddr_src: sockaddr_in = unsafe { std::mem::zeroed() };
+        let sockaddr_src_size: socklen_t = std::mem::size_of::<sockaddr_in>() as socklen_t;
+
+        let mut message = msghdr {
+            msg_name: &mut sockaddr_src as *mut _ as *mut _,
+            msg_namelen: sockaddr_src_size,
+            msg_iov: &mut iov as *mut _,
+            msg_iovlen: 1,
+            msg_control: cmsg_buf.as_mut_ptr() as *mut _,
+            msg_controllen: cmsg_buf.len(),
+            msg_flags: 0,
         };
 
-        if response < 0 {
+        let msg_response = unsafe { recvmsg(socket, &mut message as *mut _, 0) };
+
+        if msg_response < 0 {
             let err = unsafe { *__errno_location() };
             if err == ETIMEDOUT {
                 failed += 1;
                 println!("Request timed out.");
                 continue;
             }
-            panic!("recvfrom failed: {}", err)
+            panic!("recvmsg failed: {}", err)
         }
         let rtt = send_time.elapsed();
+        let mut ttl: u8 = 0;
 
-        let data = &buf[..response as usize];
-        let ip_header_len = (data[0] & 0x0F) * 4;
-        let icmp = &data[(ip_header_len as usize)..];
-        let ip_header = &data[..(ip_header_len as usize)];
-        if icmp[0] == 0 && icmp[0] == 0 {
+        unsafe {
+            let mut cmsg = CMSG_FIRSTHDR(&message);
+
+            while !cmsg.is_null() {
+                match ((*cmsg).cmsg_level, (*cmsg).cmsg_type) {
+                    (IPPROTO_IP, IP_TTL) => {
+                        ttl = *(CMSG_DATA(cmsg));
+                    }
+                    _ => {}
+                }
+                cmsg = CMSG_NXTHDR(&message, cmsg);
+            }
+        }
+        let icmp_data = &buf[..msg_response as usize];
+
+        if icmp_data[0] == 0 && icmp_data[1] == 0 {
             succeded += 1;
             println!(
                 "Received {} bytes from {:?}, time={}ms, TTL={}",
-                response,
-                std::net::Ipv4Addr::new(ip_header[12], ip_header[13], ip_header[14], ip_header[15]),
+                msg_response,
+                args.ip,
                 rtt.as_millis(),
-                ip_header[8]
+                ttl
             );
         } else {
             failed += 1;
             println!("Returned packet is not a valid response");
         }
-        succeded += 1;
     }
 
     unsafe {

@@ -126,7 +126,7 @@ pub fn send_icmp_packets(args: Args) {
         let ip_header_len = (data[0] & 0x0F) * 4;
         let icmp = &data[(ip_header_len as usize)..];
         let ip_header = &data[..(ip_header_len as usize)];
-        if icmp[0] == 0 && icmp[0] == 0 {
+        if icmp[0] == 0 && icmp[1] == 0 {
             succeded += 1;
             println!(
                 "Received {} bytes from {:?}, time={}ms, TTL={}",
